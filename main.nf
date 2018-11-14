@@ -24,11 +24,11 @@ process trim {
     """
     java -jar \$TRIM PE \
         -threads $params.trim_cpus \
-        -trimlog ${pair_id}.log \
         -summary ${pair_id}.sum \
         $reads \
         -baseout ${pair_id}.fastq.gz \
-        ILLUMINACLIP:TruSeq3-PE.fa:2:30:10 LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36
+        ILLUMINACLIP:TruSeq3-PE.fa:2:30:10 LEADING:3 TRAILING:3 \
+        SLIDINGWINDOW:4:15 MINLEN:36 2> ${pair_id}.log
     """
 }
 
