@@ -1,68 +1,127 @@
 #!/usr/bin/env nextflow
 
-// params
-params.fastqs = "/media/maxh/storage/RNAseq_example/raw_fastqs"
-params.out_dir = "/media/maxh/storage/RNAseq_example/out"
-params.trim_cpus = 3
-params.fastqc_cpus = 3
-
-fastq_pairs = Channel
+Channel
     .fromFilePairs( "$params.fastqs/*{.read1,.read2}.fastq.gz" )
     .ifEmpty { exit 1, "Fastq file(s) not found at: $params.fastqs" }
+    .into { fq_pairs_fastqc; fq_pairs_trim }
+
+process fastqc_raw {
+    input:
+    set pairId, file(fq_pair) from fq_pairs_fastqc
+
+    output:
+    file "*" into fastqc_raw
+
+    script:
+    """
+    fastqc -t $task.cpus --no-extract $fq_pair
+    """
+}
 
 process trim {
-    container "binfgsc/trimmomatic:latest"
-    cpus params.trim_cpus
-
     input:
-    set pair_id, file(reads) from fastq_pairs
+    set pair_id, file(fq_pair) from fq_pairs_trim
 
     output:
     set file("*.log"), file("*.sum") into trim_log
-    set file("*P.fastq.gz"), file("*U.fastq.gz") into trimmed
+    set pair_id, file("*P.fastq.gz"), file("*U.fastq.gz") into trimmed_fastqc, trimmed_align
 
     """
     java -jar \$TRIM PE \
-        -threads $params.trim_cpus \
+        -threads $task.cpus \
         -summary ${pair_id}.sum \
-        $reads \
+        $fq_pair \
         -baseout ${pair_id}.fastq.gz \
         ILLUMINACLIP:TruSeq3-PE.fa:2:30:10 LEADING:3 TRAILING:3 \
         SLIDINGWINDOW:4:15 MINLEN:36 2> ${pair_id}.log
     """
 }
 
-process fastqc {
-    container 'binfgsc/fastqc:latest'
-    cpus params.fastqc_cpus
-    publishDir "$params.out_dir/fastqc", mode: 'copy',
-        saveAs: {filename -> filename.indexOf(".zip") > 0 ? "zips/$filename" : "$filename"}
-
+process fastqc_trimmed {
     input:
-    set file(paired), file(unpaired) from trimmed
+    set pair_id, file(paired), file(unpaired) from trimmed_fastqc
 
     output:
     file "*" into fastqc
 
     script:
     """
-    fastqc -t $params.fastqc_cpus --no-extract $paired $unpaired
+    fastqc -t $task.cpus --no-extract $paired $unpaired
     """
 }
 
+Channel
+    .fromPath( "$params.genome/*.fa.gz" )
+    .ifEmpty { exit 1, "Fasta file not found at: $params.genome" }
+    .set { genome }
+Channel
+    .fromPath( "$params.gtf/*.gtf.gz")
+    .ifEmpty { exit 1, "GTF file not found at: $params.gtf" }
+    .into { gtf_star_index; gtf_star_align }
+
+process starIndex {
+    input:
+    file genome
+    file gtf from gtf_star_index
+
+    output:
+    file "star" into star_index
+    
+    script:
+    """
+    mkdir star
+    star \\
+        --runMode genomeGenerate \\
+        --runThreadN $task.cpus \\
+        --genomeDir star/ \\
+        --sjdbGTFfile $gtf \\
+        --genomeFastaFiles $genome \\
+        --limitGenomeGenerateRAM ${task.memory.toBytes()}
+    """
+}
+
+process starAlign {
+    publishDir "$params.out_dir/star", mode: 'copy'
+
+    input:
+    set pair_id, file(paired), file(unpaired) from trimmed_align
+    file index from star_index
+    file gtf from gtf_star_align
+
+    output:
+    set file("*Log.final.out"), file('*.bam') into star_aligned
+    file "*.out" into alignment_logs
+    file "*SJ.out.tab" into star_sj
+    file "*Log.out" into star_log
+
+    script:
+    """
+    star \\
+        --genomeDir $index \\
+        --sjdbGTFfile $gtf \\
+        --readFilesIn $paired \\
+        --runThreadN $tast.cpus \\
+        --outWigType bedGraph \\
+        --outSameType BAM SortedByCoordinate \\
+        --readFilesCommand gunzip -c \\
+        --outFileNamePrefix $pair_id
+    """
+
+}
+
 process multiqc {
-    container 'binfgsc/multiqc:latest'
     publishDir "$params.out_dir/multiqc", mode: 'copy'
 
     input:
     file fastqc from fastqc.collect()
     file trim_log from trim_log.collect()
+    file alignment_logs.collect()
 
     output:
     file "multiqc_report.html"
 
     script:
     """
-    multiqc $fastqc $trim_log -m fastqc -m trimmomatic
+    multiqc $fastqc $trim_log $alignment_logs
     """
 }
