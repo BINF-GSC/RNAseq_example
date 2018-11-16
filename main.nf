@@ -10,11 +10,26 @@ process fastqc_raw {
     set pairId, file(fq_pair) from fq_pairs_fastqc
 
     output:
-    file "*" into fastqc_raw
+    file "*" into fastqc_raw_out
 
     script:
     """
     fastqc -t $task.cpus --no-extract $fq_pair
+    """
+}
+
+process multiqc_raw {
+    publishDir "$params.out_dir/multiqc_raw", mode: 'copy'
+
+    input:
+    file fastqcs from fastqc_raw_out.collect()
+
+    output:
+    file "*"
+
+    script:
+    """
+    multiqc -n multiqc_raw $fastqcs
     """
 }
 
@@ -23,13 +38,12 @@ process trim {
     set pair_id, file(fq_pair) from fq_pairs_trim
 
     output:
-    set file("*.log"), file("*.sum") into trim_log
+    file "*.log" into trim_log
     set pair_id, file("*P.fastq.gz"), file("*U.fastq.gz") into trimmed_fastqc, trimmed_align
 
     """
     java -jar \$TRIM PE \
         -threads $task.cpus \
-        -summary ${pair_id}.sum \
         $fq_pair \
         -baseout ${pair_id}.fastq.gz \
         ILLUMINACLIP:TruSeq3-PE.fa:2:30:10 LEADING:3 TRAILING:3 \
@@ -42,7 +56,7 @@ process fastqc_trimmed {
     set pair_id, file(paired), file(unpaired) from trimmed_fastqc
 
     output:
-    file "*" into fastqc
+    file "*" into fastqc_trimmed_out
 
     script:
     """
@@ -51,15 +65,15 @@ process fastqc_trimmed {
 }
 
 Channel
-    .fromPath( "$params.genome/*.fa.gz" )
+    .fromPath( "$params.genome/*.fa" )
     .ifEmpty { exit 1, "Fasta file not found at: $params.genome" }
     .set { genome }
 Channel
-    .fromPath( "$params.gtf/*.gtf.gz")
+    .fromPath( "$params.gtf/*.gtf")
     .ifEmpty { exit 1, "GTF file not found at: $params.gtf" }
     .into { gtf_star_index; gtf_star_align }
 
-process starIndex {
+process star_index {
     input:
     file genome
     file gtf from gtf_star_index
@@ -80,13 +94,13 @@ process starIndex {
     """
 }
 
-process starAlign {
+process star_align {
     publishDir "$params.out_dir/star", mode: 'copy'
 
     input:
     set pair_id, file(paired), file(unpaired) from trimmed_align
-    file index from star_index
-    file gtf from gtf_star_align
+    file index from star_index.first()
+    file gtf from gtf_star_align.first()
 
     output:
     set file("*Log.final.out"), file('*.bam') into star_aligned
@@ -100,28 +114,27 @@ process starAlign {
         --genomeDir $index \\
         --sjdbGTFfile $gtf \\
         --readFilesIn $paired \\
-        --runThreadN $tast.cpus \\
+        --runThreadN $task.cpus \\
         --outWigType bedGraph \\
-        --outSameType BAM SortedByCoordinate \\
+        --outSAMtype BAM SortedByCoordinate \\
         --readFilesCommand gunzip -c \\
         --outFileNamePrefix $pair_id
     """
-
 }
 
-process multiqc {
-    publishDir "$params.out_dir/multiqc", mode: 'copy'
+process multiqc_trimmed {
+    publishDir "$params.out_dir/multiqc_trimmed", mode: 'copy'
 
     input:
-    file fastqc from fastqc.collect()
-    file trim_log from trim_log.collect()
-    file alignment_logs.collect()
+    file fastqcs from fastqc_trimmed_out.collect()
+    file trim_logs from trim_log.collect()
+    file alignments_logs from alignment_logs.collect()
 
     output:
-    file "multiqc_report.html"
+    file "*"
 
     script:
     """
-    multiqc $fastqc $trim_log $alignment_logs
+    multiqc -n multiqc_trimmed $fastqcs $trim_logs $alignments_logs
     """
 }
