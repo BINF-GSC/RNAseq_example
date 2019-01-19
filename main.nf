@@ -1,5 +1,3 @@
-#!/usr/bin/env nextflow
-
 Channel
     .fromFilePairs( "$params.fastqs/*{.read1,.read2}.fastq.gz" )
     .ifEmpty { exit 1, "Fastq file(s) not found at: $params.fastqs" }
@@ -7,7 +5,7 @@ Channel
 
 process fastqc_raw {
     input:
-    set pairId, file(fq_pair) from fq_pairs_fastqc
+    set pair_id, file(fq_pair) from fq_pairs_fastqc
 
     output:
     file "*" into fastqc_raw_out
@@ -19,7 +17,7 @@ process fastqc_raw {
 }
 
 process multiqc_raw {
-    publishDir "$params.out_dir/multiqc_raw", mode: 'copy'
+    publishDir "$params.results/multiqc_raw", mode: 'copy'
 
     input:
     file fastqcs from fastqc_raw_out.collect()
@@ -82,6 +80,7 @@ process star_index {
     file "star" into star_index
     
     script:
+    def avail_mem = task.memory ? "--limitGenomeGenerateRAM ${task.memory.toBytes()} - 100000000" : ''
     """
     mkdir star
     star \\
@@ -90,12 +89,12 @@ process star_index {
         --genomeDir star/ \\
         --sjdbGTFfile $gtf \\
         --genomeFastaFiles $genome \\
-        --limitGenomeGenerateRAM ${task.memory.toBytes()}
+        $avail_mem
     """
 }
 
 process star_align {
-    publishDir "$params.out_dir/star", mode: 'copy'
+    publishDir "$params.results/star", mode: 'copy'
 
     input:
     set pair_id, file(paired), file(unpaired) from trimmed_align
@@ -123,7 +122,7 @@ process star_align {
 }
 
 process multiqc_trimmed {
-    publishDir "$params.out_dir/multiqc_trimmed", mode: 'copy'
+    publishDir "$params.results/multiqc_trimmed", mode: 'copy'
 
     input:
     file fastqcs from fastqc_trimmed_out.collect()
